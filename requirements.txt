@@ -4,3 +4,5 @@ cryptg
 hachoir
 scandir; python_version<'3.6'
 prompt_toolkit
+pysocks
+more-itertools

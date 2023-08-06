@@ -1,17 +1,25 @@
 # -*- coding: utf-8 -*-
 
 """Console script for telegram-upload."""
+import os
 
 import click
 from telethon.tl.types import User
 
 from telegram_upload.cli import show_checkboxlist, show_radiolist
-from telegram_upload.client import Client, get_message_file_attribute
+from telegram_upload.client import TelegramManagerClient, get_message_file_attribute
 from telegram_upload.config import default_config, CONFIG_FILE
+from telegram_upload.download_files import KeepDownloadSplitFiles, JoinDownloadSplitFiles
 from telegram_upload.exceptions import catch
-from telegram_upload.files import NoDirectoriesFiles, RecursiveFiles, NoLargeFiles, SplitFiles, is_valid_file
+from telegram_upload.upload_files import NoDirectoriesFiles, RecursiveFiles, NoLargeFiles, SplitFiles, is_valid_file
+from telegram_upload.utils import async_to_sync, amap, sync_to_async_iterator
 
-from telegram_upload.utils import async_to_sync, amap
+
+try:
+    from natsort import natsorted
+except ImportError:
+    natsorted = None
+
 
 DIRECTORY_MODES = {
     'fail': NoDirectoriesFiles,
@@ -20,6 +28,10 @@ DIRECTORY_MODES = {
 LARGE_FILE_MODES = {
     'fail': NoLargeFiles,
     'split': SplitFiles,
+}
+DOWNLOAD_SPLIT_FILE_MODES = {
+    'keep': KeepDownloadSplitFiles,
+    'join': JoinDownloadSplitFiles,
 }
 
 
@@ -51,10 +63,19 @@ async def interactive_select_files(client, entity: str):
     return await show_checkboxlist(iterator)
 
 
+async def interactive_select_local_files():
+    iterator = filter(lambda x: os.path.isfile(x) and os.path.lexists(x), os.listdir('.'))
+    iterator = sync_to_async_iterator(map(lambda x: (x, x), iterator))
+    return await show_checkboxlist(iterator, 'Not files were found in the current directory '
+                                             '(subdirectories are not supported). Exiting...')
+
+
 async def interactive_select_dialog(client):
     iterator = client.iter_dialogs()
     iterator = amap(lambda x: (x, x.name), iterator,)
-    return await show_radiolist(iterator)
+    value = await show_radiolist(iterator, 'Not dialogs were found in your Telegram session. '
+                                           'Have you started any conversations?')
+    return value.id if value else None
 
 
 class MutuallyExclusiveOption(click.Option):
@@ -91,7 +112,7 @@ class MutuallyExclusiveOption(click.Option):
 
 @click.command()
 @click.argument('files', nargs=-1)
-@click.option('--to', default='me', help='Phone number, username, invite link or "me" (saved messages). '
+@click.option('--to', default=None, help='Phone number, username, invite link or "me" (saved messages). '
                                          'By default "me".')
 @click.option('--config', default=None, help='Configuration file to use. By default "{}".'.format(CONFIG_FILE))
 @click.option('-d', '--delete-on-success', is_flag=True, help='Delete local file after successful upload.')
@@ -117,16 +138,33 @@ class MutuallyExclusiveOption(click.Option):
                    'for socks5 and mtproxy://secret@1.2.3.4:443 for mtproxy.')
 @click.option('-a', '--album', is_flag=True,
               help='Send video or photos as an album.')
+@click.option('-i', '--interactive', is_flag=True,
+              help='Use interactive mode.')
+@click.option('--sort', is_flag=True,
+              help='Sort files by name before upload it. Install the natsort Python package for natural sorting.')
 def upload(files, to, config, delete_on_success, print_file_id, force_file, forward, directories, large_files, caption,
-           no_thumbnail, thumbnail_file, proxy, album):
+           no_thumbnail, thumbnail_file, proxy, album, interactive, sort):
     """Upload one or more files to Telegram using your personal account.
-    The maximum file size is 2 GiB and by default they will be saved in
-    your saved messages.
+    The maximum file size is 2 GiB for free users and 4 GiB for premium accounts.
+    By default, they will be saved in your saved messages.
     """
-    client = Client(config or default_config(), proxy=proxy)
+    client = TelegramManagerClient(config or default_config(), proxy=proxy)
     client.start()
+    if interactive and not files:
+        click.echo('Select the local files to upload:')
+        click.echo('[SPACE] Select file [ENTER] Next step')
+        files = async_to_sync(interactive_select_local_files())
+    if interactive and not files:
+        # No files selected. Exiting.
+        return
+    if interactive and to is None:
+        click.echo('Select the recipient dialog of the files:')
+        click.echo('[SPACE] Select dialog [ENTER] Next step')
+        to = async_to_sync(interactive_select_dialog(client))
+    elif to is None:
+        to = 'me'
     files = filter(lambda file: is_valid_file(file, lambda message: click.echo(message, err=True)), files)
-    files = DIRECTORY_MODES[directories](files)
+    files = DIRECTORY_MODES[directories](client, files)
     if directories == 'fail':
         # Validate now
         files = list(files)
@@ -137,10 +175,16 @@ def upload(files, to, config, delete_on_success, print_file_id, force_file, forw
     else:
         thumbnail = None
     files_cls = LARGE_FILE_MODES[large_files]
-    files = files_cls(files, caption=caption, thumbnail=thumbnail, force_file=force_file)
+    files = files_cls(client, files, caption=caption, thumbnail=thumbnail, force_file=force_file)
     if large_files == 'fail':
         # Validate now
         files = list(files)
+    if isinstance(to, str) and to.lstrip("-+").isdigit():
+        to = int(to)
+    if sort and natsorted:
+        files = natsorted(files, key=lambda x: x.name)
+    elif sort:
+        files = sorted(files, key=lambda x: x.name)
     if album:
         client.send_files_as_album(to, files, delete_on_success, print_file_id, forward)
     else:
@@ -156,18 +200,22 @@ def upload(files, to, config, delete_on_success, print_file_id, force_file, forw
 @click.option('-p', '--proxy', default=None,
               help='Use an http proxy, socks4, socks5 or mtproxy. For example socks5://user:pass@1.2.3.4:8080 '
                    'for socks5 and mtproxy://secret@1.2.3.4:443 for mtproxy.')
+@click.option('-m', '--split-files', default='keep', type=click.Choice(list(DOWNLOAD_SPLIT_FILE_MODES.keys())),
+              help='Defines how to download large files split in Telegram. By default the files are not merged.')
 @click.option('-i', '--interactive', is_flag=True,
               help='Use interactive mode.')
-def download(from_, config, delete_on_success, proxy, interactive):
+def download(from_, config, delete_on_success, proxy, split_files, interactive):
     """Download all the latest messages that are files in a chat, by default download
     from "saved messages". It is recommended to forward the files to download to
     "saved messages" and use parameter ``--delete-on-success``. Forwarded messages will
     be removed from the chat after downloading, such as a download queue.
     """
-    client = Client(config or default_config(), proxy=proxy)
+    client = TelegramManagerClient(config or default_config(), proxy=proxy)
     client.start()
     if not interactive and not from_:
         from_ = 'me'
+    elif isinstance(from_, str)  and from_.lstrip("-+").isdigit():
+        from_ = int(from_)
     elif interactive and not from_:
         click.echo('Select the dialog of the files to download:')
         click.echo('[SPACE] Select dialog [ENTER] Next step')
@@ -178,7 +226,9 @@ def download(from_, config, delete_on_success, proxy, interactive):
         messages = async_to_sync(interactive_select_files(client, from_))
     else:
         messages = client.find_files(from_)
-    client.download_files(from_, messages, delete_on_success)
+    messages_cls = DOWNLOAD_SPLIT_FILE_MODES[split_files]
+    download_files = messages_cls(reversed(list(messages)))
+    client.download_files(from_, download_files, delete_on_success)
 
 
 upload_cli = catch(upload)

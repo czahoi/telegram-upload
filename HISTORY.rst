@@ -2,6 +2,60 @@
 History
 =======
 
+0.7.1 (2023-08-04)
+------------------
+
+* Issue #215: "TypeError: __init__() got an unexpected keyword argument 'reply_to_msg_id'" in command - "telegram-upload --directories "recursive" --album"
+
+0.7.0 (2023-06-29)
+------------------
+
+* Issue #140: Speed up upload & download speed
+* Issue #115: Add support for variables in the caption argument
+* Issue #159: Telegram premium
+* Issue #176: Bug uploading .flv files
+* Issue #198: Improve README
+
+0.6.1 (2023-06-17)
+------------------
+
+* Issue #197: if to.lstrip("-+").isdigit(): AttributeError: 'int' object has no attribute 'lstrip'
+
+0.6.0 (2023-06-15)
+------------------
+
+* Issue #99: Combine split files when downloading
+* Issue #118: Feature Request - Choose channel by ID
+* Issue #113: Numbered files are uploaded in weird order
+* Issue #111: telethon.errors.rpcerrorlist.FloodWaitError: A wait of 819 seconds is required (caused by CheckChatInviteRequest)
+* Issue #108: RPCError 400: INPUT_GZIP_INVALID
+* Issue #193: Remove Python 3.6 support
+* Issue #194: Python 3.11 support.
+
+0.5.1 (2022-05-18)
+------------------
+
+* Issue #154: Python classifiers for Python 3.1.0
+* Issue #151: Error while uploading files
+* Issue #121: Thumbnail gets auto deleted
+
+0.5.0 (2022-02-27)
+------------------
+
+* Issue #34: Selective downloading option
+* Issue #131: Selective uploading option
+* Issue #61: Upload as album
+* Issue #66: How to re-verify when I type in wrong app-id
+* Issue #69: Create Dockerfile
+* Issue #82: Error in files with corrupted or unsupported video mimetype
+* Issue #83: Raise error when file is empty
+* Issue #84: Catch ChatWriteForbiddenError
+* Issue #94: Unclosed file ~/.config/telegram-upload.json wb
+* Issue #110: Error uploading corrupt or unsupported video file
+* Issue #129: Caption chars length
+* Issue #149: Support Python 3.10
+
+
 0.4.0 (2020-12-31)
 ------------------
 

@@ -27,6 +27,8 @@ async def async_handler(handler, event):
 
 
 class IterableDialogList(_DialogList):
+    many = False
+
     def __init__(self, values: Sequence[Tuple[_T, AnyFormattedText]]) -> None:
         pass
 
@@ -81,7 +83,10 @@ class IterableDialogList(_DialogList):
 
         @kb.add("enter")
         def _enter(event: E) -> None:
-            event.app.exit(result=self.current_values)
+            if self.many:
+                event.app.exit(result=self.current_values)
+            else:
+                event.app.exit(result=self.current_value)
 
         @kb.add(" ")
         def _enter(event: E) -> None:
@@ -107,7 +112,7 @@ class IterableDialogList(_DialogList):
 
 
 class IterableCheckboxList(IterableDialogList, CheckboxList):
-    pass
+    many = True
 
 
 class IterableRadioList(IterableDialogList, RadioList):
@@ -121,22 +126,22 @@ async def show_cli_widget(widget):
     return await app.run_async()
 
 
-async def show_checkboxlist(iterator):
+async def show_checkboxlist(iterator, not_items_error='No items were found. Exiting...'):
     # iterator = map(lambda x: (x, f'{x.text} by {x.chat.first_name}'), iterator)
     try:
         checkbox_list = IterableCheckboxList(iterator)
         await checkbox_list._init(iterator)
     except IndexError:
-        click.echo('No items were found. Exiting...', err=True)
+        click.echo(not_items_error, err=True)
         return []
     return await show_cli_widget(checkbox_list)
 
 
-async def show_radiolist(iterator):
+async def show_radiolist(iterator, not_items_error='No items were found. Exiting...'):
     try:
         radio_list = IterableRadioList(iterator)
         await radio_list._init(iterator)
     except IndexError:
-        click.echo('No items were found. Exiting...', err=True)
-        return []
+        click.echo(not_items_error, err=True)
+        return None
     return await show_cli_widget(radio_list)

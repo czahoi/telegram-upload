@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Upload (and download) files to Telegram up to 2 GiB using your account
+"""Upload (and download) files to Telegram up to 4 GiB using your account.
 """
 import copy
 import os
@@ -40,7 +40,7 @@ PLATFORMS = [
     # 'ios'
     # 'android'
 ]
-PYTHON_VERSIONS = ['3.5-3.9']
+PYTHON_VERSIONS = ['3.7-3.9', '3.10', '3.11']
 
 
 def read_requirement_file(path):

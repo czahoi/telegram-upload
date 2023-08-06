@@ -1,15 +1,18 @@
+import datetime
 import math
 import os
 
 
 import mimetypes
 from io import FileIO, SEEK_SET
-from typing import Union
+from typing import Union, TYPE_CHECKING
 
 import click
+from hachoir.metadata.metadata import RootMetadata
 from hachoir.metadata.video import MP4Metadata
 from telethon.tl.types import DocumentAttributeVideo, DocumentAttributeFilename
 
+from telegram_upload.caption_formatter import CaptionFormatter, FilePath
 from telegram_upload.exceptions import TelegramInvalidFile, ThumbError
 from telegram_upload.utils import scantree, truncate
 from telegram_upload.video import get_video_thumb, video_metadata
@@ -17,8 +20,8 @@ from telegram_upload.video import get_video_thumb, video_metadata
 mimetypes.init()
 
 
-MAX_FILE_SIZE = 2097152000
-CAPTION_MAX_LENGTH = 1024
+if TYPE_CHECKING:
+    from telegram_upload.client import TelegramManagerClient
 
 
 def is_valid_file(file, error_logger=None):
@@ -36,6 +39,13 @@ def get_file_mime(file):
     return (mimetypes.guess_type(file)[0] or ('')).split('/')[0]
 
 
+def metadata_has(metadata: RootMetadata, key: str):
+    try:
+        return metadata.has(key)
+    except ValueError:
+        return False
+
+
 def get_file_attributes(file):
     attrs = []
     mime = get_file_mime(file)
@@ -51,9 +61,9 @@ def get_file_attributes(file):
         if metadata is not None:
             supports_streaming = isinstance(video_meta, MP4Metadata)
             attrs.append(DocumentAttributeVideo(
-                (0, metadata.get('duration').seconds)[metadata.has('duration')],
-                (0, video_meta.get('width'))[video_meta.has('width')],
-                (0, video_meta.get('height'))[video_meta.has('height')],
+                (0, metadata.get('duration').seconds)[metadata_has(metadata, 'duration')],
+                (0, video_meta.get('width'))[metadata_has(video_meta, 'width')],
+                (0, video_meta.get('height'))[metadata_has(video_meta, 'height')],
                 False,
                 supports_streaming,
             ))
@@ -65,10 +75,11 @@ def get_file_thumb(file):
         return get_video_thumb(file)
 
 
-class FilesBase:
-    def __init__(self, files, thumbnail: Union[str, bool, None] = None, force_file: bool = False,
-                 caption: Union[str, None] = None):
+class UploadFilesBase:
+    def __init__(self, client: 'TelegramManagerClient', files, thumbnail: Union[str, bool, None] = None,
+                 force_file: bool = False, caption: Union[str, None] = None):
         self._iterator = None
+        self.client = client
         self.files = files
         self.thumbnail = thumbnail
         self.force_file = force_file
@@ -87,7 +98,7 @@ class FilesBase:
         return next(self._iterator)
 
 
-class RecursiveFiles(FilesBase):
+class RecursiveFiles(UploadFilesBase):
 
     def get_iterator(self):
         for file in self.files:
@@ -98,7 +109,7 @@ class RecursiveFiles(FilesBase):
                 yield file
 
 
-class NoDirectoriesFiles(FilesBase):
+class NoDirectoriesFiles(UploadFilesBase):
     def get_iterator(self):
         for file in self.files:
             if os.path.isdir(file):
@@ -107,16 +118,16 @@ class NoDirectoriesFiles(FilesBase):
                 yield file
 
 
-class LargeFilesBase(FilesBase):
+class LargeFilesBase(UploadFilesBase):
     def get_iterator(self):
         for file in self.files:
-            if os.path.getsize(file) > MAX_FILE_SIZE:
+            if os.path.getsize(file) > self.client.max_file_size:
                 yield from self.process_large_file(file)
             else:
                 yield self.process_normal_file(file)
 
     def process_normal_file(self, file: str) -> 'File':
-        return File(file, force_file=self.force_file, thumbnail=self.thumbnail, caption=self.caption)
+        return File(self.client, file, force_file=self.force_file, thumbnail=self.thumbnail, caption=self.caption)
 
     def process_large_file(self, file):
         raise NotImplementedError
@@ -130,9 +141,10 @@ class NoLargeFiles(LargeFilesBase):
 class File(FileIO):
     force_file = False
 
-    def __init__(self, path: str, force_file: Union[bool, None] = None, thumbnail: Union[str, bool, None] = None,
-                 caption: Union[str, None] = None):
+    def __init__(self, client: 'TelegramManagerClient', path: str, force_file: Union[bool, None] = None,
+                 thumbnail: Union[str, bool, None] = None, caption: Union[str, None] = None):
         super().__init__(path)
+        self.client = client
         self.path = path
         self.force_file = self.force_file if force_file is None else force_file
         self._thumbnail = thumbnail
@@ -156,7 +168,16 @@ class File(FileIO):
 
     @property
     def file_caption(self) -> str:
-        return truncate(self._caption if self._caption is not None else self.short_name, CAPTION_MAX_LENGTH)
+        """Get file caption. If caption parameter is not set, return file name.
+        If caption is set, format it with CaptionFormatter.
+        Anyways, truncate caption to max_caption_length.
+        """
+        if self._caption is not None:
+            formatter = CaptionFormatter()
+            caption = formatter.format(self._caption, file=FilePath(self.path), now=datetime.datetime.now())
+        else:
+            caption = self.short_name
+        return truncate(caption, self.client.max_caption_length)
 
     def get_thumbnail(self):
         thumb = None
@@ -184,8 +205,8 @@ class File(FileIO):
 class SplitFile(File, FileIO):
     force_file = True
 
-    def __init__(self, file: Union[str, bytes, int], max_read_size: int, name: str):
-        super().__init__(file)
+    def __init__(self, client: 'TelegramManagerClient', file: Union[str, bytes, int], max_read_size: int, name: str):
+        super().__init__(client, file)
         self.max_read_size = max_read_size
         self.remaining_size = max_read_size
         self._name = name
@@ -224,10 +245,10 @@ class SplitFiles(LargeFilesBase):
     def process_large_file(self, file):
         file_name = os.path.basename(file)
         total_size = os.path.getsize(file)
-        parts = math.ceil(total_size / MAX_FILE_SIZE)
+        parts = math.ceil(total_size / self.client.max_file_size)
         zfill = int(math.log10(10)) + 1
         for part in range(parts):
-            size = total_size - (part * MAX_FILE_SIZE) if part >= parts - 1 else MAX_FILE_SIZE
-            splitted_file = SplitFile(file, size, '{}.{}'.format(file_name, str(part).zfill(zfill)))
-            splitted_file.seek(MAX_FILE_SIZE * part, split_seek=True)
+            size = total_size - (part * self.client.max_file_size) if part >= parts - 1 else self.client.max_file_size
+            splitted_file = SplitFile(self.client, file, size, '{}.{}'.format(file_name, str(part).zfill(zfill)))
+            splitted_file.seek(self.client.max_file_size * part, split_seek=True)
             yield splitted_file
